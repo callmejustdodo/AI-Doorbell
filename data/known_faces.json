@@ -1,0 +1,17 @@
+[
+  {
+    "name": "Minsu",
+    "relation": "friend",
+    "memo": "College classmate, usually visits on weekends"
+  },
+  {
+    "name": "Jiyeon",
+    "relation": "family",
+    "memo": "Sister, has a spare key"
+  },
+  {
+    "name": "David",
+    "relation": "colleague",
+    "memo": "Works on the same team"
+  }
+]

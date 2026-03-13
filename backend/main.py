@@ -1,0 +1,231 @@
+"""FastAPI backend for AI Doorbell — WebSocket streaming + REST endpoints."""
+
+import asyncio
+import json
+import logging
+import uuid
+from contextlib import asynccontextmanager
+from datetime import datetime
+from pathlib import Path
+
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+
+from backend.config import settings
+from backend.gemini_session import GeminiSession
+from backend.models import DoorbellSession, Notification
+
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
+
+# In-memory state
+active_session: GeminiSession | None = None
+doorbell_state = DoorbellSession(id=str(uuid.uuid4()))
+notifications: list[Notification] = []
+
+# WebSocket binary frame prefixes
+FRAME_AUDIO = 0x01
+FRAME_VIDEO = 0x02
+FRAME_CONTROL = 0x03
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info("AI Doorbell starting up")
+    yield
+    # Cleanup on shutdown
+    global active_session
+    if active_session:
+        await active_session.disconnect()
+        active_session = None
+    logger.info("AI Doorbell shut down")
+
+
+app = FastAPI(title="AI Doorbell", lifespan=lifespan)
+
+# Serve static frontend files
+static_dir = Path(__file__).parent / "static"
+if static_dir.exists():
+    app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+
+
+@app.get("/")
+async def index():
+    """Serve the frontend HTML page."""
+    index_path = static_dir / "index.html"
+    if index_path.exists():
+        return HTMLResponse(content=index_path.read_text())
+    return HTMLResponse(content="<h1>AI Doorbell</h1><p>Frontend not found.</p>")
+
+
+@app.websocket("/ws/doorbell")
+async def doorbell_websocket(ws: WebSocket):
+    """Main doorbell WebSocket: binary framing protocol for audio/video/control."""
+    global active_session, doorbell_state
+
+    await ws.accept()
+    logger.info("WebSocket client connected")
+
+    # Lazy-import tool handlers to avoid circular imports
+    from backend.tools import TOOL_HANDLERS
+
+    session = GeminiSession(tool_handlers=TOOL_HANDLERS)
+
+    # Wire up callbacks to forward Gemini output to the WebSocket client
+    async def on_audio(data: bytes):
+        frame = bytes([FRAME_AUDIO]) + data
+        try:
+            await ws.send_bytes(frame)
+        except Exception:
+            pass
+
+    async def on_subtitle(text: str, speaker: str):
+        msg = json.dumps({"type": "subtitle", "text": text, "speaker": speaker})
+        frame = bytes([FRAME_CONTROL]) + msg.encode("utf-8")
+        try:
+            await ws.send_bytes(frame)
+        except Exception:
+            pass
+
+    async def on_interrupted():
+        msg = json.dumps({"type": "status", "status": "interrupted"})
+        frame = bytes([FRAME_CONTROL]) + msg.encode("utf-8")
+        try:
+            await ws.send_bytes(frame)
+        except Exception:
+            pass
+
+    async def on_tool_call_start(tool_name: str):
+        logger.info("Tool call: %s", tool_name)
+
+    session.on_audio = on_audio
+    session.on_subtitle = on_subtitle
+    session.on_interrupted = on_interrupted
+    session.on_tool_call_start = on_tool_call_start
+
+    active_session = session
+
+    try:
+        await session.connect()
+
+        # Send session connected status
+        status_msg = json.dumps(
+            {"type": "session_state", "connected": True, "resumable": True}
+        )
+        await ws.send_bytes(
+            bytes([FRAME_CONTROL]) + status_msg.encode("utf-8")
+        )
+
+        doorbell_state.status = "active"
+        doorbell_state.started_at = datetime.now()
+
+        # Main receive loop: read binary frames from the client
+        while True:
+            data = await ws.receive_bytes()
+            if len(data) < 2:
+                continue
+
+            frame_type = data[0]
+            payload = data[1:]
+
+            if frame_type == FRAME_AUDIO:
+                await session.send_audio(payload)
+
+            elif frame_type == FRAME_VIDEO:
+                await session.send_video(payload)
+
+            elif frame_type == FRAME_CONTROL:
+                try:
+                    control = json.loads(payload.decode("utf-8"))
+                    action = control.get("action", "")
+
+                    if action == "stop":
+                        break
+                    elif action == "mic_pause":
+                        await session.send_audio_stream_end()
+                    elif action == "mic_resume":
+                        pass  # Audio will resume on next audio frame
+
+                except json.JSONDecodeError:
+                    logger.warning("Invalid control frame")
+
+    except WebSocketDisconnect:
+        logger.info("WebSocket client disconnected")
+    except Exception as e:
+        logger.error("WebSocket error: %s", e)
+        try:
+            error_msg = json.dumps({"type": "error", "message": str(e)})
+            await ws.send_bytes(
+                bytes([FRAME_CONTROL]) + error_msg.encode("utf-8")
+            )
+        except Exception:
+            pass
+    finally:
+        await session.disconnect()
+        active_session = None
+        doorbell_state.status = "idle"
+        doorbell_state.ended_at = datetime.now()
+        logger.info("Doorbell session ended")
+
+
+# --- REST Endpoints ---
+
+
+@app.post("/api/doorbell/start")
+async def start_session():
+    """Start a doorbell session (WebSocket is the primary interface)."""
+    return JSONResponse({"status": doorbell_state.status, "id": doorbell_state.id})
+
+
+@app.post("/api/doorbell/stop")
+async def stop_session():
+    """Stop the active doorbell session."""
+    global active_session
+    if active_session:
+        await active_session.disconnect()
+        active_session = None
+    doorbell_state.status = "idle"
+    return JSONResponse({"status": "stopped"})
+
+
+@app.get("/api/notifications")
+async def get_notifications():
+    """Get notification history."""
+    return [n.model_dump() for n in notifications]
+
+
+@app.post("/api/owner/command")
+async def owner_command(payload: dict):
+    """Relay homeowner command from Telegram webhook to active Gemini session.
+
+    Uses send_realtime_input(text=...) — this is new user input, not conversation history.
+    """
+    global active_session
+
+    # Handle Telegram callback_query
+    callback_query = payload.get("callback_query", {})
+    callback_data = callback_query.get("data", "")
+
+    command_map = {
+        "let_in": "The homeowner says: Tell them to come in, they are welcome.",
+        "wait": "The homeowner says: Please ask them to wait a moment.",
+        "decline": "The homeowner says: Please politely decline and ask them to leave.",
+    }
+
+    text = command_map.get(callback_data)
+    if text and active_session:
+        await active_session.inject_text(text)
+        return JSONResponse({"status": "relayed", "command": callback_data})
+
+    return JSONResponse({"status": "no_active_session"}, status_code=404)
+
+
+@app.get("/api/config")
+async def get_config():
+    """Get current doorbell configuration."""
+    return {
+        "owner_name": settings.OWNER_NAME,
+        "language": settings.LANGUAGE,
+        "delivery_instructions": settings.DELIVERY_INSTRUCTIONS,
+    }
