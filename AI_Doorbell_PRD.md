@@ -262,7 +262,7 @@ Display architecture diagram + technical summary:
 | Camera/Audio | WebRTC MediaStream API | Browser webcam + microphone capture |
 | Real-time Comm | WebSocket | Frontend ↔ backend bidirectional streaming |
 | Backend | FastAPI (Python) | Deployed on Cloud Run |
-| AI Core | Gemini Live API | Real-time bidirectional video + audio. Model: `gemini-live-2.5-flash-native-audio` |
+| AI Core | Gemini Live API | Real-time bidirectional video + audio. Model: `gemini-2.5-flash-native-audio-preview-12-2025` |
 | Agent Framework | Google ADK | Agent orchestration |
 | Storage | Google Cloud Storage | Screenshots, logs |
 | Notifications | Telegram Bot API | Homeowner alerts + bidirectional commands |
@@ -277,7 +277,7 @@ Key technical specifications for the Gemini Live API (implementation reference):
 - **Protocol**: WebSocket (stateful)
 - **Features**: Voice Activity Detection, barge-in (interruptible), tool calling, affective dialog
 - **Session**: Stateful — remembers all conversation within a session
-- **Model**: `gemini-live-2.5-flash-native-audio` (or latest Live API compatible model)
+- **Model**: `gemini-2.5-flash-native-audio-preview-12-2025` (or latest Live API compatible model)
 
 ### 7.5 Streaming Flow
 
@@ -679,7 +679,7 @@ CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
 
 | Requirement | How We Meet It |
 |---|---|
-| Gemini model usage | Gemini Live API (gemini-live-2.5-flash-native-audio) — entire AI core |
+| Gemini model usage | Gemini Live API (gemini-2.5-flash-native-audio-preview-12-2025) — entire AI core |
 | Google GenAI SDK / ADK | ADK for agent orchestration |
 | Google Cloud services (1+) | Cloud Run (deployment) + Cloud Storage (screenshots) |
 | Multimodal input/output | Video + Audio in → Audio out + Text (Telegram) |

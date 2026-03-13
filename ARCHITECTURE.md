@@ -39,7 +39,7 @@ AI Doorbell is a semi-autonomous doorbell concierge powered by the Gemini Live A
 | Camera/Audio | WebRTC MediaStream API | Browser webcam + microphone capture |
 | Real-time Comm | WebSocket | Frontend ↔ backend bidirectional streaming |
 | Backend | FastAPI (Python) | Deployed on Cloud Run |
-| AI Core | Gemini Live API | Real-time bidirectional video + audio. Model: `gemini-live-2.5-flash-native-audio` |
+| AI Core | Gemini Live API | Real-time bidirectional video + audio. Model: `gemini-2.5-flash-native-audio-preview-12-2025` |
 | Agent Framework | Google ADK | Agent orchestration |
 | Storage | Google Cloud Storage | Screenshots, logs |
 | Notifications | Telegram Bot API | Homeowner alerts + bidirectional commands |
@@ -94,7 +94,7 @@ Frontend (phone browser)              Backend (Cloud Run)              Gemini Li
 ```
 ADK Orchestrator
 ├── DoorbellAgent (Main)
-│   ├── Model: Gemini Live API (gemini-live-2.5-flash-native-audio)
+│   ├── Model: Gemini Live API (gemini-2.5-flash-native-audio-preview-12-2025)
 │   ├── Input: Real-time video + audio stream
 │   ├── Output: Audio responses
 │   └── Tools:
@@ -153,7 +153,7 @@ Visitor arrives
 | Protocol | WebSocket (stateful) |
 | Features | Voice Activity Detection, barge-in, tool calling, affective dialog |
 | Session | Stateful — remembers all conversation within session |
-| Model | `gemini-live-2.5-flash-native-audio` |
+| Model | `gemini-2.5-flash-native-audio-preview-12-2025` |
 
 ---
 
