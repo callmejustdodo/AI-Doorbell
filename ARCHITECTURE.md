@@ -1,6 +1,7 @@
 # AI Doorbell — Architecture Document
 
 > Extracted from PRD v2.0 | March 2026
+> Revised after RALPLAN consensus review
 
 ---
 
@@ -25,7 +26,7 @@ AI Doorbell is a semi-autonomous doorbell concierge powered by the Gemini Live A
 │  (Telegram)  │────────▶│    │   └── Photo Capture            │
 │              │ Commands │    │       + Cloud Storage          │
 └──────────────┘         │    │                                │
-                          │    └── ADK Orchestration            │
+                          │    └── google-genai SDK             │
                           └─────────────────────────────────────┘
 ```
 
@@ -35,15 +36,17 @@ AI Doorbell is a semi-autonomous doorbell concierge powered by the Gemini Live A
 
 | Layer | Technology | Notes |
 |---|---|---|
-| Frontend | Next.js + Tailwind | Camera feed + subtitle UI (web app) |
+| Frontend | Vanilla HTML/JS (single page) | Camera feed + subtitle UI, served as static file from FastAPI |
 | Camera/Audio | WebRTC MediaStream API | Browser webcam + microphone capture |
-| Real-time Comm | WebSocket | Frontend ↔ backend bidirectional streaming |
+| Real-time Comm | WebSocket (binary frames) | Frontend ↔ backend bidirectional streaming |
 | Backend | FastAPI (Python) | Deployed on Cloud Run |
 | AI Core | Gemini Live API | Real-time bidirectional video + audio. Model: `gemini-2.5-flash-native-audio-preview-12-2025` |
-| Agent Framework | Google ADK | Agent orchestration |
+| AI SDK | `google-genai` (Python) | Direct SDK for Live API sessions + tool dispatch |
 | Storage | Google Cloud Storage | Screenshots, logs |
 | Notifications | Telegram Bot API | Homeowner alerts + bidirectional commands |
 | IaC / Deployment | Terraform + Cloud Build | Cloud Run, Cloud Storage, IAM, networking |
+
+**Note**: ADK is not used. The `google-genai` SDK provides direct Live API session management via `client.aio.live.connect()` with built-in tool calling support. This avoids an unverified abstraction layer and keeps the stack minimal for a 3-day hackathon.
 
 ---
 
@@ -51,8 +54,8 @@ AI Doorbell is a semi-autonomous doorbell concierge powered by the Gemini Live A
 
 ```
  1. Phone browser → getUserMedia() → video + audio stream
- 2. WebSocket sends to Cloud Run backend
- 3. Backend → Gemini Live API WebSocket session (bidirectional)
+ 2. WebSocket binary frames sent to Cloud Run backend
+ 3. Backend → Gemini Live API via google-genai SDK (bidirectional)
  4. Gemini analyzes video + audio, generates voice response
  5. Gemini triggers tool calling (Gmail/Calendar/FacesDB/Telegram)
  6. Backend executes tools and returns results to Gemini
@@ -69,46 +72,88 @@ AI Doorbell is a semi-autonomous doorbell concierge powered by the Gemini Live A
 ```
 Frontend (phone browser)              Backend (Cloud Run)              Gemini Live API
      │                                      │                                │
-     │── video frames (WebSocket) ─────────▶│── video stream ───────────────▶│
-     │── audio PCM 16kHz (WebSocket) ──────▶│── audio stream ───────────────▶│
+     │── video frames (WebSocket) ─────────▶│── send_realtime_input(video) ─▶│
+     │── audio PCM 16kHz (WebSocket) ──────▶│── send_realtime_input(audio) ─▶│
      │                                      │                                │
      │                                      │◀── audio PCM 24kHz ───────────│
      │◀── audio playback (WebSocket) ───────│                                │
      │                                      │                                │
+     │                                      │◀── input_transcription ───────│
+     │◀── subtitle: visitor (WebSocket) ────│                                │
+     │                                      │◀── output_transcription ──────│
+     │◀── subtitle: AI (WebSocket) ─────────│                                │
+     │                                      │                                │
      │                                      │◀── tool_call: check_gmail ────│
-     │                                      │── tool_result ───────────────▶│
+     │                                      │── tool_response ─────────────▶│
      │                                      │                                │
      │                                      │◀── tool_call: send_telegram ──│
      │◀── notification update (WebSocket) ──│── Telegram Bot API ──▶ Owner  │
      │                                      │                                │
      │                                      │◀── owner command (webhook) ────│
-     │                                      │── inject context ────────────▶│
+     │                                      │── send_realtime_input(text) ──▶│
      │                                      │◀── audio response ────────────│
      │◀── audio playback (WebSocket) ───────│                                │
 ```
 
 ---
 
-## 5. Agent Design (ADK)
+## 5. WebSocket Binary Protocol
+
+The phone ↔ backend WebSocket uses binary frames with a 1-byte type prefix:
+
+### Client → Server
+
+| Prefix | Type | Payload |
+|---|---|---|
+| `0x01` | Audio | Raw PCM 16-bit, 16kHz, mono |
+| `0x02` | Video | JPEG frame (quality ~0.5, 5 FPS) |
+| `0x03` | Control | UTF-8 JSON: `{"action": "start"\|"stop"}` |
+
+### Server → Client
+
+| Prefix | Type | Payload |
+|---|---|---|
+| `0x01` | Audio | Raw PCM 16-bit, 24kHz (from Gemini) |
+| `0x03` | Control | UTF-8 JSON (see below) |
+
+Control message types:
+```json
+{"type": "subtitle", "text": "...", "speaker": "ai"|"visitor"}
+{"type": "notification", "data": { ... Notification object ... }}
+{"type": "status", "status": "idle"|"active"|"caution"}
+```
+
+---
+
+## 6. Agent Design
 
 ```
-ADK Orchestrator
-├── DoorbellAgent (Main)
-│   ├── Model: Gemini Live API (gemini-2.5-flash-native-audio-preview-12-2025)
-│   ├── Input: Real-time video + audio stream
-│   ├── Output: Audio responses
-│   └── Tools:
-│       ├── check_gmail_orders   — Match delivery with Gmail order history
-│       ├── check_calendar       — Verify visitor against today's appointments
-│       ├── check_known_faces    — Look up visitor in registered acquaintance DB
-│       ├── send_telegram_alert  — Send summary + photo to homeowner
-│       └── capture_screenshot   — Capture current frame to Cloud Storage
-│
-└── NotifierAgent
-    ├── Model: Gemini (text, for summary generation)
-    ├── Input: Event from DoorbellAgent
-    └── Output: Formatted Telegram notification
+DoorbellAgent (google-genai Live API session)
+├── Model: gemini-2.5-flash-native-audio-preview-12-2025
+├── Input: Real-time video + audio stream
+├── Output: Audio responses
+├── Transcription: input_transcription + output_transcription enabled
+├── Session Config:
+│   ├── response_modalities: [AUDIO]  (TEXT and AUDIO cannot coexist)
+│   ├── context_window_compression: enabled (for sessions > 2 min)
+│   └── session_resumption: enabled (handle connection resets)
+└── Tools:
+    ├── check_gmail_orders   — Match delivery with Gmail order history
+    ├── check_calendar       — Verify visitor against today's appointments
+    ├── check_known_faces    — Look up visitor in registered acquaintance DB
+    ├── send_telegram_alert  — Send summary + photo to homeowner (inline formatting)
+    └── capture_screenshot   — Capture current frame to Cloud Storage
 ```
+
+### Session Limits (Critical)
+
+| Limit | Value | Mitigation |
+|---|---|---|
+| Audio + video session | ~2 min without compression | Enable `context_window_compression` in `LiveConnectConfig` |
+| Connection lifetime | ~10 min | Implement session resumption; reconnect before timeout |
+| Response modality | AUDIO **or** TEXT, not both | Use AUDIO only; subtitles via `output_transcription` |
+| `send_realtime_input` | Use `audio=` and `video=` keys separately | Never use `media=` key (deprecated) |
+| Mic pause | Send `audioStreamEnd` signal | Required per best practices when mic is paused |
 
 ### Visitor Classification Flow
 
@@ -144,7 +189,7 @@ Visitor arrives
 
 ---
 
-## 6. Gemini Live API Specs
+## 7. Gemini Live API Specs
 
 | Parameter | Value |
 |---|---|
@@ -154,27 +199,34 @@ Visitor arrives
 | Features | Voice Activity Detection, barge-in, tool calling, affective dialog |
 | Session | Stateful — remembers all conversation within session |
 | Model | `gemini-2.5-flash-native-audio-preview-12-2025` |
+| SDK | `google-genai` via `client.aio.live.connect()` |
+| Transcription | `input_transcription` + `output_transcription` for subtitles |
+| Compression | `context_window_compression` for sessions > 2 min |
 
 ---
 
-## 7. API Endpoints
+## 8. API Endpoints
 
 ```
 # WebSocket (real-time streaming)
-WS  /ws/doorbell           → Doorbell stream (video+audio in, audio+notifications out)
+WS  /ws/doorbell           → Doorbell stream (binary protocol, see Section 5)
 
 # REST
 POST /api/doorbell/start    → Start doorbell session
 POST /api/doorbell/stop     → Stop doorbell session
 GET  /api/notifications     → Notification history
-POST /api/owner/command     → Relay homeowner command (called from Telegram webhook)
+POST /api/owner/command     → Relay homeowner command (Telegram webhook)
 GET  /api/config            → Get configuration
 PUT  /api/config            → Update configuration
+
+# Static
+GET  /                      → Serve frontend (index.html)
+GET  /static/*              → Static assets (JS, CSS)
 ```
 
 ---
 
-## 8. Data Models
+## 9. Data Models
 
 ```python
 from pydantic import BaseModel
@@ -212,7 +264,7 @@ class KnownPerson(BaseModel):
 
 ---
 
-## 9. Cloud Infrastructure (Terraform)
+## 10. Cloud Infrastructure (Terraform)
 
 ### Directory Structure
 
@@ -238,13 +290,17 @@ Google Cloud Project
 │   └── ai-doorbell/backend          ← Docker image repository
 │
 ├── Cloud Run
-│   └── ai-doorbell-service          ← FastAPI backend
+│   └── ai-doorbell-service          ← FastAPI backend + static frontend
 │       ├── Service Account (least-privilege)
 │       ├── Secret references (Telegram token, OAuth creds)
+│       ├── session_affinity = true (WebSocket stickiness)
+│       ├── timeout = 300s (long conversations)
+│       ├── max_instance_request_concurrency = 1
 │       └── Public invoker IAM (for Telegram webhook)
 │
 ├── Cloud Storage
 │   └── ai-doorbell-screenshots      ← Visitor photos, logs
+│       └── Lifecycle: auto-delete after 7 days
 │
 ├── Secret Manager
 │   ├── telegram-bot-token
@@ -282,32 +338,28 @@ CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
 
 ---
 
-## 10. Project Structure
+## 11. Project Structure
 
 ```
 AI-Doorbell/
-├── frontend/                # Next.js web app
-│   ├── src/
-│   │   ├── app/             # Next.js app router
-│   │   ├── components/      # Camera feed, subtitles, status, notification log
-│   │   └── lib/             # WebSocket client, audio playback
-│   ├── package.json
-│   └── tailwind.config.ts
-│
-├── backend/                 # FastAPI server
-│   ├── main.py              # App entry, WebSocket endpoint
-│   ├── agents/
-│   │   ├── doorbell_agent.py    # DoorbellAgent (Gemini Live API)
-│   │   └── notifier_agent.py    # NotifierAgent (Telegram)
-│   ├── tools/
-│   │   ├── gmail.py             # check_gmail_orders
-│   │   ├── calendar.py          # check_calendar
-│   │   ├── known_faces.py       # check_known_faces
-│   │   ├── telegram.py          # send_telegram_alert
-│   │   └── screenshot.py        # capture_screenshot
+├── backend/
+│   ├── main.py              # FastAPI app, WebSocket /ws/doorbell, static file serving
+│   ├── config.py            # pydantic-settings: env vars
 │   ├── models.py            # Pydantic data models
-│   ├── config.py            # Environment / settings
-│   └── requirements.txt
+│   ├── requirements.txt     # google-genai, fastapi, uvicorn, etc.
+│   ├── doorbell_agent.py    # Gemini Live API session + tool dispatch
+│   └── tools/
+│       ├── __init__.py
+│       ├── gmail.py         # check_gmail_orders
+│       ├── calendar.py      # check_calendar
+│       ├── known_faces.py   # check_known_faces
+│       ├── telegram.py      # send_telegram_alert (with inline formatting)
+│       └── screenshot.py    # capture_screenshot
+│
+├── frontend/
+│   └── index.html           # Single-page vanilla JS app
+│                             # Camera feed, AudioWorkletNode, WebSocket client,
+│                             # subtitle overlay, status indicator
 │
 ├── infra/                   # Terraform IaC
 │   ├── main.tf
