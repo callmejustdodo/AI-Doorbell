@@ -75,30 +75,32 @@ async def send_telegram_alert(
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             if capture_photo:
-                # Send photo with caption
-                payload = {
-                    "chat_id": settings.TELEGRAM_CHAT_ID,
-                    "caption": message,
-                    "parse_mode": "HTML",
-                }
-                if reply_markup:
-                    import json
-                    payload["reply_markup"] = json.dumps(reply_markup)
+                from backend.tools.screenshot import get_last_frame
+                import json as json_mod
+                frame = get_last_frame()
 
-                # Try to get a screenshot from the screenshot tool
-                from backend.tools.screenshot import capture_screenshot
-                screenshot = await capture_screenshot()
-                # For now, send as text since screenshot is mock
-                # When real GCS is implemented, download the image and send
-                resp = await client.post(
-                    _api_url("sendMessage"),
-                    json={
+                if frame:
+                    # Send actual photo via multipart upload
+                    files = {"photo": ("screenshot.jpg", frame, "image/jpeg")}
+                    data = {
                         "chat_id": settings.TELEGRAM_CHAT_ID,
-                        "text": message + "\n\n[Photo capture requested - screenshot saved]",
-                        "parse_mode": "HTML",
-                        **({"reply_markup": reply_markup} if reply_markup else {}),
-                    },
-                )
+                        "caption": message,
+                    }
+                    if reply_markup:
+                        data["reply_markup"] = json_mod.dumps(reply_markup)
+                    resp = await client.post(
+                        _api_url("sendPhoto"), data=data, files=files,
+                    )
+                else:
+                    # No frame available, send text only
+                    resp = await client.post(
+                        _api_url("sendMessage"),
+                        json={
+                            "chat_id": settings.TELEGRAM_CHAT_ID,
+                            "text": message + "\n\n[No camera frame available]",
+                            **({"reply_markup": reply_markup} if reply_markup else {}),
+                        },
+                    )
             else:
                 payload = {
                     "chat_id": settings.TELEGRAM_CHAT_ID,

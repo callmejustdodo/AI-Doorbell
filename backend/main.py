@@ -15,6 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from backend.config import settings
 from backend.gemini_session import GeminiSession
 from backend.models import DoorbellSession, Notification
+from backend.tools.screenshot import set_last_frame
 from backend.tools.telegram import answer_callback_query, set_webhook
 
 logger = logging.getLogger(__name__)
@@ -103,6 +104,13 @@ async def doorbell_websocket(ws: WebSocket):
 
     async def on_tool_call_start(tool_name: str):
         logger.info("Tool call: %s", tool_name)
+        friendly = tool_name.replace("_", " ").title()
+        msg = json.dumps({"type": "tool_call", "tool": tool_name, "label": friendly})
+        frame = bytes([FRAME_CONTROL]) + msg.encode("utf-8")
+        try:
+            await ws.send_bytes(frame)
+        except Exception:
+            pass
 
     session.on_audio = on_audio
     session.on_subtitle = on_subtitle
@@ -138,6 +146,7 @@ async def doorbell_websocket(ws: WebSocket):
                 await session.send_audio(payload)
 
             elif frame_type == FRAME_VIDEO:
+                set_last_frame(payload)
                 await session.send_video(payload)
 
             elif frame_type == FRAME_CONTROL:

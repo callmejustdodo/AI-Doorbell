@@ -1,4 +1,4 @@
-"""Screenshot capture tool: saves current video frame to storage."""
+"""Screenshot capture tool: captures current video frame and sends to Telegram."""
 
 import logging
 import uuid
@@ -6,30 +6,41 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-# TODO: Implement real GCS upload
-# For now, saves locally for demo development
+# Module-level frame store — updated by the WebSocket handler
+_last_frame: bytes | None = None
+
+
+def set_last_frame(frame: bytes):
+    """Called from the WebSocket handler to store the latest video frame."""
+    global _last_frame
+    _last_frame = frame
+
+
+def get_last_frame() -> bytes | None:
+    """Get the most recent video frame."""
+    return _last_frame
 
 
 async def capture_screenshot() -> dict:
-    """Capture current camera frame and save to storage.
-
-    In production, this would:
-    1. Get the last video frame from the active GeminiSession
-    2. Encode as JPEG
-    3. Upload to GCS bucket
-    4. Return signed URL
-    """
+    """Capture current camera frame. Returns frame bytes info for Telegram sending."""
     screenshot_id = str(uuid.uuid4())[:8]
     timestamp = datetime.now().isoformat()
 
-    logger.info("SCREENSHOT: Captured frame %s at %s", screenshot_id, timestamp)
+    frame = _last_frame
+    if frame:
+        logger.info("SCREENSHOT: Captured frame %s (%d bytes) at %s",
+                     screenshot_id, len(frame), timestamp)
+        return {
+            "captured": True,
+            "screenshot_id": screenshot_id,
+            "timestamp": timestamp,
+            "has_frame": True,
+        }
 
-    # Mock URL for development
-    mock_url = f"https://storage.googleapis.com/ai-doorbell-screenshots/{screenshot_id}.jpg"
-
+    logger.warning("SCREENSHOT: No video frame available")
     return {
-        "captured": True,
+        "captured": False,
         "screenshot_id": screenshot_id,
-        "url": mock_url,
         "timestamp": timestamp,
+        "has_frame": False,
     }

@@ -175,7 +175,7 @@ class GeminiSession:
             delivery_instructions=settings.DELIVERY_INSTRUCTIONS,
         )
 
-        return types.LiveConnectConfig(
+        config = types.LiveConnectConfig(
             response_modalities=[types.Modality.AUDIO],
             speech_config=types.SpeechConfig(
                 voice_config=types.VoiceConfig(
@@ -190,14 +190,15 @@ class GeminiSession:
             tools=TOOL_DECLARATIONS,
             input_audio_transcription=types.AudioTranscriptionConfig(),
             output_audio_transcription=types.AudioTranscriptionConfig(),
-            context_window_compression=types.ContextWindowCompressionConfig(
-                trigger_tokens=100000,
-                sliding_window=types.SlidingWindow(target_tokens=50000),
-            ),
-            session_resumption=types.SessionResumptionConfig(
-                handle=self._resumption_handle
-            ),
         )
+
+        # Only include session resumption when we have a valid handle
+        if self._resumption_handle:
+            config.session_resumption = types.SessionResumptionConfig(
+                handle=self._resumption_handle
+            )
+
+        return config
 
     async def connect(self):
         """Establish a Gemini Live API session."""
