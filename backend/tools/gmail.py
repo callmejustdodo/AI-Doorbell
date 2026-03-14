@@ -1,15 +1,11 @@
 """Gmail order matching tool — searches for recent order/delivery emails."""
 
-import base64
 import logging
-from pathlib import Path
 
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
+from backend.tools.google_auth import get_credentials
 
 logger = logging.getLogger(__name__)
 
-TOKEN_FILE = Path(__file__).parent.parent.parent / "token.json"
 SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
 
 
@@ -17,14 +13,10 @@ def _get_gmail_service():
     """Build an authorized Gmail API service."""
     from googleapiclient.discovery import build
 
-    if not TOKEN_FILE.exists():
-        logger.warning("token.json not found — Gmail integration disabled")
+    creds = get_credentials(SCOPES)
+    if not creds:
+        logger.warning("Gmail credentials not available")
         return None
-
-    creds = Credentials.from_authorized_user_file(str(TOKEN_FILE), SCOPES)
-    if creds.expired and creds.refresh_token:
-        creds.refresh(Request())
-        TOKEN_FILE.write_text(creds.to_json())
 
     return build("gmail", "v1", credentials=creds)
 

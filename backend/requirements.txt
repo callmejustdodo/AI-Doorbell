@@ -7,4 +7,5 @@ google-auth-oauthlib==1.2.1
 google-api-python-client==2.159.0
 python-telegram-bot==21.10
 google-cloud-storage==2.19.0
+google-cloud-secret-manager==2.21.1
 pydantic-settings==2.7.1
