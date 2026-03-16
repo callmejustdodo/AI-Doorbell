@@ -16,11 +16,10 @@
       overflow: hidden;
     }
 
-    /* Camera section */
+    /* Camera section — fullscreen */
     .camera-container {
-      position: relative;
-      flex: 1;
-      min-height: 0;
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
       background: #111;
     }
     #camera-feed {
@@ -77,14 +76,16 @@
       50% { opacity: 0.4; }
     }
 
-    /* Controls */
+    /* Controls — floating over camera */
     .controls {
+      position: fixed;
+      bottom: 32px;
+      left: 0; right: 0;
       display: flex;
       align-items: center;
       justify-content: center;
       gap: 16px;
-      padding: 16px;
-      background: #111;
+      z-index: 10;
     }
     .btn {
       border: none;
@@ -99,26 +100,29 @@
     }
     .btn:active { transform: scale(0.92); }
     .btn-start {
-      background: #4caf50;
-      color: white;
-      width: 68px; height: 68px;
-      font-size: 26px;
+      display: none;
     }
-    .btn-start.active { background: #f44336; }
+    .btn-start.active { display: none; }
     .btn-mic {
       background: #333;
       color: white;
     }
     .btn-mic.muted { background: #f44336; }
 
-    /* Notification log */
+    /* Notification log — floating overlay at top, hidden when empty */
     .notification-log {
-      max-height: 140px;
+      position: fixed;
+      top: 48px;
+      left: 8px; right: 8px;
+      max-height: 150px;
       overflow-y: auto;
-      padding: 8px 16px;
-      background: #0d0d0d;
-      border-top: 1px solid #222;
+      padding: 8px 12px;
+      background: rgba(0,0,0,0.6);
+      border-radius: 12px;
+      z-index: 10;
+      display: none;
     }
+    .notification-log.has-items { display: block; }
     .notification-item {
       padding: 8px 0;
       border-bottom: 1px solid #1a1a1a;
@@ -129,18 +133,18 @@
     .notification-item .time { color: #666; min-width: 50px; }
     .notification-item .msg { color: #ccc; }
 
-    /* Tool call indicator */
-    .tool-indicator {
+    /* Tool call indicator stack */
+    .tool-stack {
       position: absolute;
       bottom: 130px;
       left: 0; right: 0;
-      text-align: center;
+      display: flex;
+      flex-direction: column-reverse;
+      align-items: center;
+      gap: 6px;
       pointer-events: none;
-      opacity: 0;
-      transition: opacity 0.3s;
     }
-    .tool-indicator.visible { opacity: 1; }
-    .tool-indicator-inner {
+    .tool-pill {
       display: inline-flex;
       align-items: center;
       gap: 8px;
@@ -149,7 +153,21 @@
       border-radius: 20px;
       font-size: 13px;
       color: #aaa;
+      opacity: 0;
+      transform: translateY(8px);
+      animation: pillIn 0.25s ease forwards;
     }
+    @keyframes pillIn {
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .tool-pill.fade-out {
+      animation: pillOut 0.3s ease forwards;
+    }
+    @keyframes pillOut {
+      to { opacity: 0; transform: translateY(-8px); }
+    }
+    .tool-pill.success { color: #81c784; }
+    .tool-pill.fail { color: #ef9a9a; }
     .tool-spinner {
       width: 14px; height: 14px;
       border: 2px solid #555;
@@ -186,12 +204,7 @@
     <span id="status-text">Idle</span>
   </div>
 
-  <div class="tool-indicator" id="tool-indicator">
-    <div class="tool-indicator-inner">
-      <div class="tool-spinner"></div>
-      <span id="tool-label">Checking...</span>
-    </div>
-  </div>
+  <div class="tool-stack" id="tool-stack"></div>
 
   <div class="subtitle-overlay">
     <div class="subtitle" id="subtitle" style="display:none;"></div>
@@ -199,7 +212,6 @@
 </div>
 
 <div class="controls">
-  <button class="btn btn-mic" id="btn-mic" title="Mute mic" disabled>&#x1f3a4;</button>
   <button class="btn btn-start" id="btn-start" title="Start">&#x25b6;</button>
 </div>
 
@@ -217,16 +229,15 @@
   const statusText = document.getElementById('status-text');
   const subtitleEl = document.getElementById('subtitle');
   const btnStart = document.getElementById('btn-start');
-  const btnMic = document.getElementById('btn-mic');
   const notifLog = document.getElementById('notification-log');
   const errorBanner = document.getElementById('error-banner');
-  const toolIndicator = document.getElementById('tool-indicator');
-  const toolLabel = document.getElementById('tool-label');
-  let toolTimeout = null;
+  const toolStack = document.getElementById('tool-stack');
+  const toolPills = {};  // tool name -> pill element
 
   // State
   let ws = null;
   let audioCtx = null;
+  let playbackCtx = null;
   let captureNode = null;
   let playbackNode = null;
   let mediaStream = null;
@@ -269,6 +280,7 @@
     item.className = 'notification-item';
     item.innerHTML = '<span class="time">' + time + '</span><span class="msg">' + msg + '</span>';
     notifLog.prepend(item);
+    notifLog.classList.add('has-items');
     // Keep max 20
     while (notifLog.children.length > 20) notifLog.removeChild(notifLog.lastChild);
   }
@@ -279,7 +291,7 @@
     try {
       mediaStream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true, sampleRate: 16000 },
-        video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 480 } }
+        video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 480 }, zoom: { ideal: 0.5 } }
       });
       video.srcObject = mediaStream;
     } catch (e) {
@@ -318,15 +330,13 @@
     captureNode.connect(audioCtx.destination); // Required for processing
   }
 
-  // --- Audio Playback via AudioWorklet ---
+  // --- Audio Playback via AudioWorklet (separate 24kHz context) ---
 
   async function startAudioPlayback() {
-    if (!audioCtx) return;
-
-    // Playback at 24kHz — create a separate context if needed
-    // For simplicity, we'll use the same context and let the browser handle resampling
-    playbackNode = new AudioWorkletNode(audioCtx, 'playback-processor');
-    playbackNode.connect(audioCtx.destination);
+    playbackCtx = new AudioContext({ sampleRate: 24000 });
+    await playbackCtx.audioWorklet.addModule('/static/audio-worklet-processor.js');
+    playbackNode = new AudioWorkletNode(playbackCtx, 'playback-processor');
+    playbackNode.connect(playbackCtx.destination);
   }
 
   function playAudio(pcmData) {
@@ -418,28 +428,62 @@
     };
   }
 
-  function showToolIndicator(label) {
-    toolLabel.textContent = label;
-    toolIndicator.classList.add('visible');
-    clearTimeout(toolTimeout);
-    toolTimeout = setTimeout(() => {
-      toolIndicator.classList.remove('visible');
-    }, 5000);
+  function showToolIndicator(label, toolName) {
+    var pill = document.createElement('div');
+    pill.className = 'tool-pill';
+    pill.innerHTML = '<div class="tool-spinner"></div><span>' + label + '</span>';
+    toolStack.appendChild(pill);
+    if (toolName) toolPills[toolName] = pill;
+    // Auto-remove loading pills after 8s if no result arrives
+    pill._timeout = setTimeout(function() { removePill(pill, toolName); }, 8000);
   }
 
-  function hideToolIndicator() {
-    toolIndicator.classList.remove('visible');
-    clearTimeout(toolTimeout);
+  function showToolResult(label, status, toolName) {
+    var icon = status === 'success' ? '\u2714' : '\u2718';
+    // Update existing pill or create new one
+    var pill = toolName && toolPills[toolName];
+    if (pill) {
+      clearTimeout(pill._timeout);
+      pill.querySelector('.tool-spinner').remove();
+      pill.querySelector('span').textContent = icon + ' ' + label;
+      pill.classList.add(status === 'success' ? 'success' : 'fail');
+    } else {
+      pill = document.createElement('div');
+      pill.className = 'tool-pill ' + (status === 'success' ? 'success' : 'fail');
+      pill.innerHTML = '<span>' + icon + ' ' + label + '</span>';
+      toolStack.appendChild(pill);
+    }
+    // Fade out after 3s
+    pill._timeout = setTimeout(function() { removePill(pill, toolName); }, 3000);
+  }
+
+  function removePill(pill, toolName) {
+    clearTimeout(pill._timeout);
+    pill.classList.add('fade-out');
+    pill.addEventListener('animationend', function() { pill.remove(); });
+    if (toolName && toolPills[toolName] === pill) delete toolPills[toolName];
+  }
+
+  function hideAllToolIndicators() {
+    Array.from(toolStack.children).forEach(function(pill) {
+      pill.classList.add('fade-out');
+      pill.addEventListener('animationend', function() { pill.remove(); });
+    });
+    Object.keys(toolPills).forEach(function(k) { delete toolPills[k]; });
   }
 
   function handleControlMessage(msg) {
     switch (msg.type) {
       case 'tool_call':
-        showToolIndicator(msg.label || msg.tool);
+        showToolIndicator(msg.label || msg.tool, msg.tool);
+        break;
+
+      case 'tool_result':
+        showToolResult(msg.label, msg.status, msg.tool);
         break;
 
       case 'subtitle':
-        hideToolIndicator();
+        hideAllToolIndicators();
         showSubtitle(msg.text, msg.speaker);
         break;
 
@@ -465,6 +509,10 @@
         } else {
           setStatus('idle', msg.resumable ? 'Reconnecting...' : 'Disconnected');
         }
+        break;
+
+      case 'ping':
+        sendControl('pong');
         break;
 
       case 'error':
@@ -496,7 +544,6 @@
       isRunning = true;
       btnStart.innerHTML = '&#x23f9;';
       btnStart.classList.add('active');
-      btnMic.disabled = false;
       setStatus('active', 'Starting...');
     } catch (e) {
       showError('Failed to start: ' + e.message);
@@ -524,14 +571,16 @@
       audioCtx.close();
       audioCtx = null;
     }
+    if (playbackCtx) {
+      playbackCtx.close();
+      playbackCtx = null;
+    }
     stopMedia();
     clearAudioQueue();
 
     btnStart.innerHTML = '&#x25b6;';
     btnStart.classList.remove('active');
-    btnMic.disabled = true;
     isMuted = false;
-    btnMic.classList.remove('muted');
     setStatus('idle', 'Idle');
   }
 
@@ -545,15 +594,9 @@
     }
   });
 
-  btnMic.addEventListener('click', () => {
-    isMuted = !isMuted;
-    btnMic.classList.toggle('muted', isMuted);
-    if (isMuted) {
-      sendControl('mic_pause');
-    } else {
-      sendControl('mic_resume');
-    }
-  });
+  // Auto-start on page load
+  start();
+
 
 })();
 </script>

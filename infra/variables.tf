@@ -8,7 +8,7 @@ variable "project_id" {
 variable "region" {
   description = "GCP region for all resources"
   type        = string
-  default     = "us-central1"
+  default     = "asia-northeast3"
 }
 
 variable "gemini_api_key" {
@@ -44,4 +44,22 @@ variable "delivery_instructions" {
   description = "Default delivery instructions"
   type        = string
   default     = "Please leave it at the door"
+}
+
+variable "google_client_id" {
+  description = "Google OAuth client ID"
+  type        = string
+  sensitive   = true
+}
+
+variable "google_client_secret" {
+  description = "Google OAuth client secret"
+  type        = string
+  sensitive   = true
+}
+
+variable "google_refresh_token" {
+  description = "Google OAuth refresh token"
+  type        = string
+  sensitive   = true
 }

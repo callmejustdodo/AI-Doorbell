@@ -1,46 +1,48 @@
 """Shared Google OAuth2 credential loader.
 
-Loads token.json locally, or from Secret Manager on Cloud Run.
+Priority: env vars (.env) > token.json > Secret Manager (Cloud Run).
 """
 
-import json
 import logging
-import os
-from pathlib import Path
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 
+from backend.config import settings
+
 logger = logging.getLogger(__name__)
 
-TOKEN_FILE = Path(__file__).parent.parent.parent / "token.json"
-SECRET_NAME = "google-oauth-token"
-GCP_PROJECT = os.environ.get("GCP_PROJECT", "molthome")
+TOKEN_URI = "https://oauth2.googleapis.com/token"
 
 
 def get_credentials(scopes: list[str]) -> Credentials | None:
-    """Get OAuth2 credentials from local file or Secret Manager."""
-    # Try local token.json first
-    if TOKEN_FILE.exists():
-        creds = Credentials.from_authorized_user_file(str(TOKEN_FILE), scopes)
-        if creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-            TOKEN_FILE.write_text(creds.to_json())
+    """Get OAuth2 credentials from env vars, local file, or Secret Manager."""
+
+    # 1. Try env vars (from .env or Cloud Run env)
+    if settings.GOOGLE_REFRESH_TOKEN and settings.GOOGLE_CLIENT_ID:
+        creds = Credentials(
+            token=None,
+            refresh_token=settings.GOOGLE_REFRESH_TOKEN,
+            token_uri=TOKEN_URI,
+            client_id=settings.GOOGLE_CLIENT_ID,
+            client_secret=settings.GOOGLE_CLIENT_SECRET,
+            scopes=scopes,
+        )
+        creds.refresh(Request())
         return creds
 
-    # Try Secret Manager (Cloud Run)
+    # 2. Try local token.json
     try:
-        from google.cloud import secretmanager
-
-        client = secretmanager.SecretManagerServiceClient()
-        name = f"projects/{GCP_PROJECT}/secrets/{SECRET_NAME}/versions/latest"
-        response = client.access_secret_version(request={"name": name})
-        token_data = json.loads(response.payload.data.decode("utf-8"))
-
-        creds = Credentials.from_authorized_user_info(token_data, scopes)
-        if creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        return creds
+        from pathlib import Path
+        token_file = Path(__file__).parent.parent.parent / "token.json"
+        if token_file.exists():
+            creds = Credentials.from_authorized_user_file(str(token_file), scopes)
+            if creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+                token_file.write_text(creds.to_json())
+            return creds
     except Exception as e:
-        logger.warning("Could not load credentials: %s", e)
-        return None
+        logger.warning("token.json load failed: %s", e)
+
+    logger.warning("No Google credentials available")
+    return None

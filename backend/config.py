@@ -10,6 +10,11 @@ class Settings(BaseSettings):
     TELEGRAM_BOT_TOKEN: str = ""
     TELEGRAM_CHAT_ID: str = ""
 
+    # Google OAuth
+    GOOGLE_CLIENT_ID: str = ""
+    GOOGLE_CLIENT_SECRET: str = ""
+    GOOGLE_REFRESH_TOKEN: str = ""
+
     # Google Cloud Storage
     GCS_BUCKET_NAME: str = ""
 
@@ -19,7 +24,7 @@ class Settings(BaseSettings):
     DELIVERY_INSTRUCTIONS: str = "Please leave it at the door"
 
     # Voice
-    VOICE_NAME: str = "Kore"
+    VOICE_NAME: str = "Charon"
 
     # Server
     HOST: str = "0.0.0.0"
