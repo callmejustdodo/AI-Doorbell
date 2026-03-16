@@ -9,6 +9,8 @@
 
 AI Doorbell is a semi-autonomous doorbell concierge powered by the Gemini Live API. A phone camera simulates the doorbell hardware, while a FastAPI backend on Cloud Run orchestrates real-time AI conversation, multi-source verification, and homeowner notifications.
 
+![Architecture Diagram](architecture_diagram.jpg)
+
 ```
 ┌──────────────┐         ┌─────────────────────────────────────┐
 │  Phone       │         │       Google Cloud (Cloud Run)       │
