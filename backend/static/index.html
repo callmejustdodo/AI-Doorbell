@@ -498,7 +498,9 @@
           setStatus('caution', 'Caution');
         } else if (msg.status === 'active') {
           setStatus('active', 'In Conversation');
-        } else {
+        } else if (msg.status === 'interrupted') {
+          setStatus('active', 'Listening...');
+        } else if (msg.status === 'idle') {
           setStatus('idle', 'Idle');
         }
         break;
